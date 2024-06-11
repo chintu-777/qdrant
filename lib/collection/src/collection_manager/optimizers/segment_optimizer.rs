@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::fs;
 
 use common::cpu::CpuPermit;
 use io::storage_version::StorageVersion;
@@ -101,6 +102,32 @@ pub trait SegmentOptimizer {
         &self,
         optimizing_segments: &[LockedSegment],
     ) -> CollectionResult<SegmentBuilder> {
+
+        // Check if there is enough disk space to continue indexing
+        let available_disk_space = match get_available_disk_space(self.temp_path()) {
+            Ok(space) => space,
+            Err(err) => {
+                log::error!("Failed to get available disk space: {}", err);
+                return Err(CollectionError::OutOfDisk {
+                    description: "Failed to get available disk space".to_string(),
+                });
+            }
+        };
+        let available_disk_space = match get_available_disk_space(self.temp_path()) {
+            Ok(space) => space,
+            Err(err) => {
+                log::error!("Failed to get available disk space: {}", err);
+                return Err(CollectionError::OutOfDisk {
+                    description: "Failed to get available disk space".to_string(),
+                });
+            }
+        };       
+        if available_disk_space < required_disk_space {
+            log::error!("Not enough disk space to continue indexing");
+            return Err(CollectionError::OutOfDisk {
+                description: "Not enough disk space to continue indexing".to_string(),
+            });
+        }
         // Example:
         //
         // S1: {
@@ -247,6 +274,19 @@ pub trait SegmentOptimizer {
             self.temp_path(),
             &optimized_config,
         )?)
+    }
+
+    // Helper function to get available disk space
+    fn get_available_disk_space(path: &Path) -> CollectionResult<u64> {
+        let stats = fs::statvfs(path).map_err(|e| CollectionError::service_error(e.to_string()))?;
+        Ok(stats.blocks_available() * stats.fragment_size())
+    }
+
+    // Helper function to calculate required disk space
+    fn calculate_required_disk_space(bytes_count_by_vector_name: &HashMap<String, usize>) -> CollectionResult<u64> {
+        // Calculate the total required disk space based on the bytes count by vector name
+        let total_bytes_count: usize = bytes_count_by_vector_name.values().sum();
+        Ok(total_bytes_count as u64)
     }
 
     /// Restores original segments from proxies
